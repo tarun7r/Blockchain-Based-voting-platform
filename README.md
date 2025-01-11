@@ -48,7 +48,8 @@ Since current voting systems don’t suffice to the security needs of the modern
     <li>Python (to communicate with blockchain and for backend and frontend API calls)</li>
     <li>Ganache (to create private blockchain network for testing on localhost)</li>
     <li>Flask (web framework)</li>
-
+  </ul>
+  
 ## Routes
 
 - `/login`: User login route. Generates a unique vote ID using Aadhar number and timestamp.
