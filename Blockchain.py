@@ -1,135 +1,215 @@
 import hashlib
 import json
 import os
-import re
 from collections import Counter
+from datetime import datetime
+from typing import Optional, Dict, List
 
-import requests
-from flask import (Flask, abort, jsonify, make_response, redirect,
-                   render_template, request, session, url_for)
+from flask import (
+    Flask, abort, jsonify, make_response, redirect,
+    render_template, request, session, url_for, flash
+)
 from web3 import Web3
+from web3.exceptions import ContractLogicError
+from dotenv import load_dotenv
+from functools import wraps
 
-app = Flask(__name__, template_folder='template',static_folder='template/assets')
+# Load environment variables
+load_dotenv()
 
+app = Flask(__name__, template_folder='templates', static_folder='static')
+app.secret_key = os.getenv('FLASK_SECRET_KEY', os.urandom(24))
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_HTTPONLY'] = True
 
+# Blockchain configuration
+RPC_URL = os.getenv('BLOCKCHAIN_RPC_URL')
+CONTRACT_ADDRESS = os.getenv('CONTRACT_ADDRESS')
+CONTRACT_ABI = json.loads(os.getenv('CONTRACT_ABI'))
 
-rpc = "https://naklecha.blockchain.azure.com:3200/xxxxxxxxxxxxxxxxxxxxxxxxx"
+# Initialize Web3
+web3 = Web3(Web3.HTTPProvider(RPC_URL))
+contract = web3.eth.contract(address=CONTRACT_ADDRESS, abi=CONTRACT_ABI)
 
-web3 = Web3(Web3.HTTPProvider(rpc))
-abi = '[{"constant":true,"inputs":[],"name":"candidatesCount","outputs":[{"name":"","type":"uint256"}],"payable":false,"stateMutability":"view","type":"function","signature":"0x2d35a8a2"},{"constant":true,"inputs":[{"name":"","type":"uint256"}],"name":"candidates","outputs":[{"name":"id","type":"uint256"},{"name":"name","type":"string"},{"name":"voteCount","type":"uint256"}],"payable":false,"stateMutability":"view","type":"function","signature":"0x3477ee2e"},{"constant":true,"inputs":[{"name":"","type":"address"}],"name":"voters","outputs":[{"name":"","type":"bool"}],"payable":false,"stateMutability":"view","type":"function","signature":"0xa3ec138d"},{"inputs":[],"payable":false,"stateMutability":"nonpayable","type":"constructor","signature":"constructor"},{"anonymous":false,"inputs":[{"indexed":true,"name":"_candidateId","type":"uint256"}],"name":"votedEvent","type":"event","signature":"0xfff3c900d938d21d0990d786e819f29b8d05c1ef587b462b939609625b684b16"},{"constant":false,"inputs":[],"name":"end","outputs":[],"payable":false,"stateMutability":"nonpayable","type":"function","signature":"0xefbe1c1c"},{"constant":false,"inputs":[{"name":"_candidateId","type":"uint256"}],"name":"vote","outputs":[],"payable":false,"stateMutability":"nonpayable","type":"function","signature":"0x0121b93f"}]'
-contract_addr = "0x0000000000000000000000000000000000000001"
+# Candidate mapping
+CANDIDATES = {
+    'a': 'Cristiano Ronaldo',
+    'b': 'Neymar',
+    'c': 'Lionel Messi'
+}
 
-
-app = Flask(__name__)
-app.secret_key = 'super secret key'
-
-accounts = [  ]
-
-privatekeys = [ ]
-
-vote_tx = []
-voted = []
-ended = 0
-
-
-
-class unique_vote_id:
-   
-   def __init__(self, previous_block_hash,uniq):
-        self.previous_block_hash = previous_block_hash
-        self.uniq = uniq
-        self.block_data = "-".join(uniq)+"-"+ previous_block_hash
-        self.block_hash = hashlib.sha256(self.block_data.encode()).hexdigest()
-
-
-
-@app.route('/vote',methods = ['POST', 'GET'])
-def vote():
-   render_template(r'sign_in.html')
-   if request.method == 'POST':
-      result = request.form
-      global name
-      name = result['name']
-      unique_number = result['Aadhar Number']
-      initial_block = unique_vote_id("0",unique_number)
-      global vote_id
-      vote_id = initial_block.block_hash
-      
-      return render_template(r"vote.html",variable= vote_id, name = name)
-
-
-@app.route('/admin',methods = ['POST', 'GET'])
-def admin():
-   render_template(r'admin_signin.html')
-   if request.method == 'POST':
-      result = request.form
-      name = result['name']
-      password = result['password']
-      return render_template(r"admin.html", name = name)
-     
-
-
-@app.route('/result',methods = ['POST', 'GET'])
-def result():
-   render_template(r'admin.html')
-   
-
-   mycursor.execute("SELECT vote FROM poll")
-   
-   myresult = mycursor.fetchall()
-   result = []
-   for x in myresult:
-      result.append(x)
-   
-   duplicate_dict = Counter(result)
-   candidate1 = duplicate_dict['a',]
-   candidate2 = duplicate_dict['b',]
-   candidate3 = duplicate_dict['c',]
-   total = int(candidate1)+int(candidate2)+int(candidate3)
-   return render_template(r"results.html", c1 = candidate1 , c2= candidate2 , c3 = candidate3,total = total)
-
-
-@app.route('/thank',methods = ['POST', 'GET'])
-def thank():
-   render_template(r'vote.html')
-   if request.method == 'POST':
-      result = request.form
-      choice =  result['poll']
-     
-   
-      return render_template(r"thank.html",variable= vote_id, name=name)
-
-
-@app.route('/check_signin')
-def check_signin():
-   render_template(r'thank.html')
-   return render_template(r"check_signin.html")
+class VoteIDGenerator:
     
+    @staticmethod
+    def generate_vote_id(aadhar_number: str, timestamp: str) -> str:
+        """Generate a unique vote ID using Aadhar number and timestamp"""
+        data = f"{aadhar_number}-{timestamp}"
+        return hashlib.sha256(data.encode()).hexdigest()
+    
+    @staticmethod
+    def verify_vote_id(vote_id: str) -> bool:
+        """Verify if a vote ID is valid"""
+        return bool(vote_id and len(vote_id) == 64 and all(c in '0123456789abcdef' for c in vote_id))
 
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            flash('Please log in first.', 'error')
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
 
+def admin_required(f):
+    """Decorator to check if user is an admin"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('is_admin'):
+            flash('Admin access required.', 'error')
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
 
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        aadhar_number = request.form.get('aadhar_number')
+        name = request.form.get('name')
+        
+        if not aadhar_number or not name:
+            flash('Please fill in all fields.', 'error')
+            return render_template('login.html')
+        
+        # Generate vote ID
+        vote_id = VoteIDGenerator.generate_vote_id(
+            aadhar_number,
+            datetime.now().isoformat()
+        )
+        
+        session['user_id'] = vote_id
+        session['name'] = name
+        
+        return redirect(url_for('vote'))
+    
+    return render_template('login.html')
 
-@app.route('/check',methods = ['POST', 'GET'])
-def check():
-   render_template(r'check_signin.html')
-   if request.method == 'POST':
-      result = request.form
-      vote_hash = result['name']
+@app.route('/vote', methods=['GET', 'POST'])
+@login_required
+def vote():
+    if request.method == 'POST':
+        choice = request.form.get('candidate')
+        
+        if not choice or choice not in CANDIDATES:
+            flash('Invalid candidate selection.', 'error')
+            return render_template('vote.html', candidates=CANDIDATES)
+        
+        try:
+            # Submit vote to blockchain
+            tx_hash = contract.functions.vote(CANDIDATES[choice]).transact({
+                'from': web3.eth.accounts[0]
+            })
+            
+            # Wait for transaction confirmation
+            web3.eth.wait_for_transaction_receipt(tx_hash)
+            
+            flash('Vote submitted successfully!', 'success')
+            return redirect(url_for('thank_you'))
+            
+        except ContractLogicError as e:
+            flash(f'Error submitting vote: {str(e)}', 'error')
+            return render_template('vote.html', candidates=CANDIDATES)
+    
+    return render_template('vote.html', candidates=CANDIDATES)
 
-      
-      voter_id = vote_hash
+@app.route('/admin', methods=['GET', 'POST'])
+def admin_login():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        # In production, use proper authentication
+        if username == os.getenv('ADMIN_USERNAME') and \
+           password == os.getenv('ADMIN_PASSWORD'):
+            session['is_admin'] = True
+            return redirect(url_for('results'))
+        
+        flash('Invalid credentials.', 'error')
+    
+    return render_template('admin_login.html')
 
+@app.route('/results')
+@admin_required
+def results():
+    try:
+        # Get results from blockchain
+        results = {
+            candidate: contract.functions.getVoteCount(idx).call()
+            for idx, candidate in enumerate(CANDIDATES.values())
+        }
+        
+        total_votes = sum(results.values())
+        
+        return render_template(
+            'results.html',
+            results=results,
+            total_votes=total_votes
+        )
+        
+    except Exception as e:
+        flash(f'Error fetching results: {str(e)}', 'error')
+        return redirect(url_for('admin_login'))
 
-     
-      if vote[0][0]=='a':
-         vote = "Cristano Ronaldo"
-      elif vote[0][0]=='b':
-         vote  = "Neymar"
-      elif vote[0][0] =='c':
-         vote = "Lionel Messi"
-      
-      return render_template(r"check.html",vote = vote, variable = vote_hash)
+@app.route('/verify', methods=['GET', 'POST'])
+def verify_vote():
+    if request.method == 'POST':
+        vote_id = request.form.get('vote_id')
+        
+        if not VoteIDGenerator.verify_vote_id(vote_id):
+            flash('Invalid vote ID format.', 'error')
+            return render_template('verify.html')
+        
+        try:
+            # In production, implement secure vote verification
+            vote_info = contract.functions.getVoteInfo(vote_id).call()
+            return render_template('verify.html', vote_info=vote_info)
+            
+        except Exception as e:
+            flash('Vote not found or error occurred.', 'error')
+    
+    return render_template('verify.html')
 
+@app.route('/thank-you')
+@login_required
+def thank_you():
+    return render_template('thank_you.html')
+
+@app.errorhandler(404)
+def not_found_error(error):
+    return render_template('404.html'), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return render_template('500.html'), 500
 
 if __name__ == '__main__':
-   app.run(debug = True)
+    # Check if required environment variables are set
+    required_env_vars = [
+        'FLASK_SECRET_KEY',
+        'BLOCKCHAIN_RPC_URL',
+        'CONTRACT_ADDRESS',
+        'CONTRACT_ABI',
+        'ADMIN_USERNAME',
+        'ADMIN_PASSWORD'
+    ]
+    
+    missing_vars = [var for var in required_env_vars if not os.getenv(var)]
+    if missing_vars:
+        raise RuntimeError(
+            f"Missing required environment variables: {', '.join(missing_vars)}"
+        )
+    
+    # Check blockchain connection
+    if not web3.is_connected():
+        raise RuntimeError("Cannot connect to blockchain network")
+    
+    app.run(debug=os.getenv('FLASK_DEBUG', 'False').lower() == 'true')
